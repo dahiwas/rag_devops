@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  # Traefik Service
+  traefik:
+    container_name: traefik
+    image: "traefik:latest"
+    restart: always
+    environment:
+      - CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}
+    networks:
+      - traefik
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.n8n.address=:9001/tcp
+      - --entrypoints.rag.address=:9002/tcp
+      - --api.dashboard=true
+      - --providers.docker
+      - --log.level=ERROR
+      - --certificatesresolvers.leresolver.acme.email=${TRAEFIK_ACME_EMAIL}
+      - --certificatesresolvers.leresolver.acme.storage=./acme.json
+      - --certificatesresolvers.leresolver.acme.dnschallenge.provider=cloudflare
+      - --certificatesresolvers.leresolver.acme.dnschallenge.delayBeforeCheck=0
+    ports:
+      - "80:80"
+      - "443:443"
+      - "9001:9001"
+      - "9002:9002"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "/home/ubuntu/docker/traefik/acme.json:/acme.json"
+    labels:
+      - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik.rule=Host(`${TRAEFIK_DASHBOARD_HOST}`)"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.middlewares=auth"
+      - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_AUTH}"
+      - "traefik.http.routers.traefik.tls.certresolver=leresolver"
+      - "traefik.docker.network=traefik"
+    env_file:
+      - .env
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Banco de dados vetorial
+  qdrant:
+    image: qdrant/qdrant
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    networks:
+      - app-network
+    environment:
+      - QDRANT_ALLOW_CORS=true
+      - QDRANT_STORAGE_PATH=/qdrant/storage
+      - QDRANT_SERVICE_HOST=0.0.0.0
+    restart: unless-stopped
+
+  # API do Qdrant com Gemini integrado
+  api-chat-bd:
+    build:
+      context: ./api_chat_bd
+      dockerfile: Dockerfile
+    container_name: api-chat-bd
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./api_chat_bd/uploads:/app/uploads
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    env_file:
+      - .env
+    depends_on:
+      - qdrant
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # API do Gemini
+  chat-api-llm:
+    build:
+      context: ./chat_api_llm
+      dockerfile: Dockerfile
+    container_name: chat-api-llm
+    ports:
+      - "8001:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    env_file:
+      - .env
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # Interface Streamlit
+  chat-interface:
+    build:
+      context: ./chat_interface
+      dockerfile: Dockerfile
+    container_name: chat-interface
+    environment:
+      - QDRANT_API_URL=http://api-chat-bd:8000
+      - GEMINI_API_URL=http://chat-api-llm:8000
+    env_file:
+      - ./chat_interface/.env
+      - .env
+    depends_on:
+      - api-chat-bd
+      - chat-api-llm
+    networks:
+      - app-network
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.chatzada.rule=Host(`${CHAT_DOMAIN}`)"
+      - "traefik.http.routers.chatzada.tls.certresolver=leresolver"
+      - "traefik.http.routers.chatzada.entrypoints=websecure"
+      - "traefik.http.routers.chatzada.tls=true"
+      - "traefik.http.services.chatzada.loadbalancer.server.port=8501"
+      - "traefik.http.routers.chatzada.service=chatzada"
+      - "traefik.docker.network=traefik"
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+  traefik:
+    external: true

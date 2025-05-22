@@ -1,0 +1,6 @@
+GEMINI_API_KEY=your_gemini_key
+CF_DNS_API_TOKEN=your_cloudflare_token
+TRAEFIK_ACME_EMAIL=your_email_acme
+TRAEFIK_DASHBOARD_HOST=traefik2.yourdns.com
+TRAEFIK_AUTH=admin:$$apr1$$NtCoQDqO$$Y2wyYAAoKX2W1NbynqMYT/
+CHAT_DOMAIN=chatdevops.yourdns.com
